@@ -9,6 +9,7 @@
 Use shadow net to recognize the scene text of a single image
 """
 import argparse
+import os
 import os.path as ops
 
 import cv2
@@ -17,6 +18,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import glog as logger
 import wordninja
+from tensorflow.python.tools import freeze_graph
 
 from config import global_config
 from crnn_model import crnn_net
@@ -79,10 +81,15 @@ def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path,
     new_width = int(scale_rate * image.shape[1])
     new_width = new_width if new_width > CFG.ARCH.INPUT_SIZE[0] else \
     CFG.ARCH.INPUT_SIZE[0]
+    # TODO: Fix it,  force 100.
+    new_width = 100
+
     image = cv2.resize(image, (new_width, new_heigth),
                        interpolation=cv2.INTER_LINEAR)
     image_vis = image
     image = np.array(image, np.float32) / 127.5 - 1.0
+
+    print(new_width, new_heigth)
 
     inputdata = tf.placeholder(
         dtype=tf.float32,
@@ -111,10 +118,12 @@ def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path,
     decodes, _ = tf.nn.ctc_beam_search_decoder(
         inputs=inference_ret,
         sequence_length=int(new_width / 4) * np.ones(1),
-        merge_repeated=False,
+        merge_repeated=True,
         beam_width=10
     )
+    decode = decodes[0]
 
+    print(decode)
     # config tf saver
     saver = tf.train.Saver()
 
@@ -129,11 +138,41 @@ def recognize(image_path, weights_path, char_dict_path, ord_map_dict_path,
 
         saver.restore(sess=sess, save_path=weights_path)
 
-        preds = sess.run(decodes, feed_dict={inputdata: [image]})
+        preds = sess.run(decode, feed_dict={inputdata: [image]})
 
-        preds = codec.sparse_tensor_to_str(preds[0])[0]
+        print(preds)
+
+        preds = codec.sparse_tensor_to_str(preds)[0]
         if is_english:
             preds = ' '.join(wordninja.split(preds))
+
+        # return preds_evaluated
+        input_graph_name = "input_graph.pb"
+        output_graph_name = "output_graph.pb"
+        export_dir = 'export'
+        tf.train.write_graph(sess.graph, export_dir, input_graph_name)
+        tf.logging.info("Write graph at %s." % os.path.join(export_dir,
+                                                            input_graph_name))
+
+        export_graph = tf.Graph()
+        with export_graph.as_default():
+            freeze_graph.freeze_graph(input_graph=os.path.join(export_dir,
+                                                               input_graph_name),
+                                      input_saver="",
+                                      input_binary=False,
+                                      input_checkpoint=weights_path,
+                                      output_node_names='CTCBeamSearchDecoder',
+                                      restore_op_name="",
+                                      filename_tensor_name="",
+                                      output_graph=os.path.join(export_dir,
+                                                                output_graph_name),
+                                      clear_devices=True,
+                                      initializer_nodes=None,
+                                      variable_names_blacklist="")
+
+        tf.logging.info("Export model at %s." % os.path.join(export_dir,
+                                                             output_graph_name))
+
 
         logger.info('Predict image {:s} result: {:s}'.format(
             ops.split(image_path)[1], preds)
